@@ -2,6 +2,8 @@
 
 A modular Streamlit application that combines Google Gemini, LangGraph, SQLite persistence, and human approval for tool execution.
 
+This is a small learning project built to explore how to implement AI agents. It is not intended to be a production-ready application.
+
 ## Overview
 
 This project implements a conversational agent that can:
