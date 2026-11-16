@@ -104,13 +104,13 @@ jobs:
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           IMAGE_NAME: ${{ secrets.IMAGE_NAME }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: |
           set -euo pipefail
           [[ "$DOCKER_USERNAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo 'Invalid DOCKER_USERNAME'; exit 1; }
           [[ "$IMAGE_NAME" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || { echo 'Invalid IMAGE_NAME'; exit 1; }
-          [[ -n "$GOOGLE_API_KEY" ]] || { echo 'GOOGLE_API_KEY is missing'; exit 1; }
+          [[ -n "$GEMINI_API_KEY" ]] || { echo 'GEMINI_API_KEY is missing'; exit 1; }
           [[ -n "$TAVILY_API_KEY" ]] || { echo 'TAVILY_API_KEY is missing'; exit 1; }
           docker info >/dev/null || { echo 'Docker is unavailable to the runner'; exit 1; }
 
@@ -129,7 +129,7 @@ jobs:
         shell: bash
         env:
           IMAGE_PATH: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.IMAGE_NAME }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           LANGSMITH_TRACING: ${{ secrets.LANGSMITH_TRACING }}
           LANGSMITH_ENDPOINT: ${{ secrets.LANGSMITH_ENDPOINT }}
@@ -142,7 +142,7 @@ jobs:
             --restart unless-stopped \
             --name stapp \
             -p 8501:8501 \
-            -e GOOGLE_API_KEY \
+            -e GEMINI_API_KEY \
             -e TAVILY_API_KEY \
             -e LANGSMITH_TRACING \
             -e LANGSMITH_ENDPOINT \
