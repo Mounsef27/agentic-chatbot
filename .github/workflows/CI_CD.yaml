@@ -5,25 +5,20 @@ on:
     branches:
       - main
     paths-ignore:
-      - "README.md"
-
-  # Allows you to run the workflow manually
+      - README.md
   workflow_dispatch:
 
-# Prevent two deployments from running at the same time
 concurrency:
   group: agentic-chatbot-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-
   integration:
     name: Continuous Integration
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -40,39 +35,43 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --all-groups
 
-      - name: Lint code
+      - name: Lint and check formatting
         run: |
           uv run ruff check .
           uv run ruff format --check .
 
       - name: Run unit tests
-        run: uv run pytest
+        run: uv run pytest -v
 
   push_to_registry:
     name: Build and Push Docker Image
     needs: integration
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Validate Docker image settings
+      - name: Validate Docker configuration
+        shell: bash
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           IMAGE_NAME: ${{ secrets.IMAGE_NAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         run: |
-          if [ -z "$DOCKER_USERNAME" ]; then
-            echo "DOCKER_USERNAME secret is missing."
+          set -euo pipefail
+          if [[ ! "$DOCKER_USERNAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo 'DOCKER_USERNAME must be a single lowercase Docker Hub username (no spaces/newlines).'
             exit 1
           fi
-
-          if [ -z "$IMAGE_NAME" ]; then
-            echo "IMAGE_NAME secret is missing."
+          if [[ ! "$IMAGE_NAME" =~ ^[a-z0-9][a-z0-9_.-]*$ ]]; then
+            echo 'IMAGE_NAME must be a single repository name, e.g. agentic-chatbot (no slash, tag, spaces or newlines).'
             exit 1
           fi
-
-          echo "Docker image settings are configured."
+          if [[ -z "$DOCKER_PASSWORD" ]]; then
+            echo 'DOCKER_PASSWORD secret is missing.'
+            exit 1
+          fi
+          echo 'Docker image configuration is valid.'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -95,23 +94,41 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ============================================================
-  # 3. DEPLOY TO AWS EC2 SELF-HOSTED RUNNER
-  # ============================================================
   continuous_deployment:
     name: Deploy to AWS EC2
     needs: push_to_registry
-    runs-on: self-hosted
-
+    runs-on: [self-hosted, linux]
     steps:
+      - name: Validate runtime configuration
+        shell: bash
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          IMAGE_NAME: ${{ secrets.IMAGE_NAME }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$DOCKER_USERNAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo 'Invalid DOCKER_USERNAME'; exit 1; }
+          [[ "$IMAGE_NAME" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] || { echo 'Invalid IMAGE_NAME'; exit 1; }
+          [[ -n "$GOOGLE_API_KEY" ]] || { echo 'GOOGLE_API_KEY is missing'; exit 1; }
+          [[ -n "$TAVILY_API_KEY" ]] || { echo 'TAVILY_API_KEY is missing'; exit 1; }
+          docker info >/dev/null || { echo 'Docker is unavailable to the runner'; exit 1; }
+
       - name: Log in to Docker Hub
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Validate application secrets
+      - name: Pull image for this exact commit
         env:
+          IMAGE_PATH: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.IMAGE_NAME }}
+        run: docker pull "${IMAGE_PATH}:sha-${GITHUB_SHA}"
+
+      - name: Replace application container
+        shell: bash
+        env:
+          IMAGE_PATH: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.IMAGE_NAME }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           LANGSMITH_TRACING: ${{ secrets.LANGSMITH_TRACING }}
@@ -119,60 +136,8 @@ jobs:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGSMITH_PROJECT: ${{ secrets.LANGSMITH_PROJECT }}
         run: |
-          if [ -z "$GOOGLE_API_KEY" ]; then
-            echo "GOOGLE_API_KEY secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$TAVILY_API_KEY" ]; then
-            echo "TAVILY_API_KEY secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$LANGSMITH_TRACING" ]; then
-            echo "LANGSMITH_TRACING secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$LANGSMITH_ENDPOINT" ]; then
-            echo "LANGSMITH_ENDPOINT secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$LANGSMITH_API_KEY" ]; then
-            echo "LANGSMITH_API_KEY secret is missing."
-            exit 1
-          fi
-
-          if [ -z "$LANGSMITH_PROJECT" ]; then
-            echo "LANGSMITH_PROJECT secret is missing."
-            exit 1
-          fi
-
-          echo "All required application secrets are configured."
-
-      - name: Pull latest Docker image
-        env:
-          IMAGE_PATH: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.IMAGE_NAME }}
-        run: |
-          docker pull "${IMAGE_PATH}:main"
-
-      - name: Stop and remove existing container
-        run: |
+          set -euo pipefail
           docker rm -f stapp 2>/dev/null || true
-
-      - name: Run Streamlit container
-        env:
-          IMAGE_PATH: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.IMAGE_NAME }}
-
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-          LANGSMITH_TRACING: ${{ secrets.LANGSMITH_TRACING }}
-          LANGSMITH_ENDPOINT: ${{ secrets.LANGSMITH_ENDPOINT }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_PROJECT: ${{ secrets.LANGSMITH_PROJECT }}
-
-        run: |
           docker run -d \
             --restart unless-stopped \
             --name stapp \
@@ -183,50 +148,35 @@ jobs:
             -e LANGSMITH_ENDPOINT \
             -e LANGSMITH_API_KEY \
             -e LANGSMITH_PROJECT \
-            "${IMAGE_PATH}:main"
-
-      - name: Verify container is running
-        run: |
-          sleep 10
-
-          if ! docker ps \
-            --filter "name=^stapp$" \
-            --filter "status=running" \
-            --format "{{.Names}}" | grep -q "^stapp$"; then
-
-            echo "The Streamlit container failed to start."
-            docker logs stapp || true
-            exit 1
-          fi
-
-          echo "The Streamlit container is running."
-          docker ps --filter "name=^stapp$"
+            "${IMAGE_PATH}:sha-${GITHUB_SHA}"
 
       - name: Verify Streamlit health endpoint
+        shell: bash
         run: |
+          set -euo pipefail
           for attempt in $(seq 1 12); do
+            if ! docker inspect -f '{{.State.Running}}' stapp 2>/dev/null | grep -qx true; then
+              echo 'The Streamlit container stopped unexpectedly.'
+              docker logs --tail 100 stapp || true
+              exit 1
+            fi
             if docker exec stapp python -c \
               "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5)" \
               >/dev/null 2>&1; then
-
-              echo "Streamlit application is healthy."
+              echo 'Streamlit application is healthy.'
               exit 0
             fi
-
-            echo "Waiting for Streamlit to become ready..."
+            echo "Waiting for Streamlit (attempt $attempt/12)..."
             sleep 5
           done
-
-          echo "Streamlit did not become healthy."
+          echo 'Streamlit health check failed.'
           docker logs --tail 100 stapp || true
           exit 1
 
       - name: Show recent application logs
         if: always()
-        run: |
-          docker logs --tail 50 stapp 2>/dev/null || true
+        run: docker logs --tail 50 stapp 2>/dev/null || true
 
       - name: Remove unused Docker images
         if: always()
-        run: |
-          docker image prune -f
+        run: docker image prune -f
